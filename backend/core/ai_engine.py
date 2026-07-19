@@ -1,60 +1,96 @@
 import os
+import io
+from pypdf import PdfReader
 import chromadb
 from openai import OpenAI
 from dotenv import load_dotenv
 
-# Cargamos las claves del archivo .env
 load_dotenv()
 
-# Inicializamos el cliente de ChromaDB
-chroma_client = chromadb.PersistentClient(path="./data/vector_db")
+# Inicializamos el cliente local de ChromaDB (guardará los datos en la carpeta ./chroma_db)
+chroma_client = chromadb.PersistentClient(path="./chroma_db")
+collection = chroma_client.get_or_create_collection(name="universidad_apuntes")
 
-# Inicializamos el cliente usando la infraestructura de OpenRouter
+# Inicializamos el cliente de OpenRouter para conectar con NVIDIA
 ai_client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY"),
+    api_key=os.getenv("OPENROUTER_API_KEY")
 )
 
-def save_chunks_to_db(chunks: list, collection_name: str = "university_notes"):
-    """Guarda los trozos en ChromaDB (Función oficial ya probada)"""
-    collection = chroma_client.get_or_create_collection(name=collection_name)
-    ids = [f"chunk_{i}" for i in range(len(chunks))]
-    collection.add(documents=chunks, ids=ids)
-    print(f"✅ Guardados {len(chunks)} trozos en ChromaDB.")
+def ingest_pdf_bytes(file_bytes: bytes, filename: str) -> int:
+    """
+    Recibe un PDF en formato de bytes, extrae su texto,
+    lo trocea y lo almacena indexado en ChromaDB.
+    """
+    # 1. Leer el PDF desde la memoria RAM (sin guardarlo en disco)
+    pdf_file = io.BytesIO(file_bytes)
+    reader = PdfReader(pdf_file)
+    full_text = ""
 
-def search_relevant_chunks(query: str, collection_name: str = "university_notes", n_results: int = 3) -> list:
-    """Busca los trozos más relevantes en ChromaDB"""
-    collection = chroma_client.get_or_create_collection(name=collection_name)
-    results = collection.query(query_texts=[query], n_results=n_results)
-    return results['documents'][0]
+    for page in reader.pages:
+        text = page.extract_text()
+        if text:
+            full_text += text + "\n"
+
+    if not full_text.strip():
+        raise ValueError("El archivo PDF está vacío o su texto no es legible.")
+
+    # 2. Trocear el texto de forma inteligente (Chunking)
+    # Creamos bloques de 1000 caracteres para que la IA los procese mejor
+    chunk_size = 1000
+    chunks = [full_text[i:i+chunk_size] for i in range(0, len(full_text), chunk_size)]
+
+    # 3. Preparar los datos para ChromaDB
+    documents = []
+    metadatas = []
+    ids = []
+
+    for idx, chunk in enumerate(chunks):
+        documents.append(chunk)
+        metadatas.append({"source": filename, "chunk_index": idx})
+        ids.append(f"{filename}_chunk_{idx}") # ID único para que no se pisen
+
+    # 4. Guardar los trozos en la base de datos vectorial
+    collection.add(
+        documents=documents,
+        metadatas=metadatas if 'metandatas' in locals() else metadatas, # Pequeño seguro por compatibilidad
+        ids=ids
+    )
+
+    return len(chunks)
 
 def generate_answer(question: str) -> str:
     """
-    Busca en ChromaDB y le pasa el contexto a Llama 3 a través de OpenRouter.
+    Busca los fragmentos más relevantes en ChromaDB y genera la respuesta con la IA.
     """
-    # 1. Buscar los fragmentos de apuntes relevantes
-    context_chunks = search_relevant_chunks(question, n_results=3)
-    context = "\n---\n".join(context_chunks)
+    # Recuperamos los 2 fragmentos que semánticamente se parecen más a la pregunta
+    results = collection.query(
+        query_texts=[question],
+        n_results=2
+    )
 
-    # 2. Crear las instrucciones
+    context = ""
+    if results and 'documents' in results and results['documents']:
+        context = "\n\n".join(results['documents'][0])
+
+    # Construimos el prompt con la técnica RAG
     prompt = f"""
-    Eres un asistente de estudio universitario brillante y empático. Tu trabajo es responder a la pregunta del estudiante basándote ÚNICAMENTE en el contexto de los apuntes proporcionados a continuación.
-    
-    Si el contexto no contiene la información para responder, di amablemente: "Lo siento, no encuentro esa información en los apuntes que has subido". No inventes nada.
-    
-    CONTEXTO DE LOS APUNTES:
+    Eres un asistente de IA experto en resumir y explicar apuntes universitarios.
+    Utiliza ÚNICAMENTE la siguiente información para responder a la pregunta del usuario. 
+    Si la información no es suficiente, dilo amablemente, no inventes nada.
+
+    CONTEXTO EXTRAÍDO DE LOS APUNTES:
     {context}
-    
-    PREGUNTA DEL ESTUDIANTE:
+
+    PREGUNTA DEL USUARIO:
     {question}
+
+    RESPUESTA (en un español claro, profesional y estructurado):
     """
 
-    # 3. Llamar a OpenRouter usando un modelo Llama 3 gratuito
     completion = ai_client.chat.completions.create(
-        model="tencent/hy3:free",
-        messages=[
-            {"role": "user", "content": prompt}
-        ],
+        model="nvidia/nemotron-3-ultra:free",
+        messages=[{"role": "user", "content": prompt}],
         temperature=0.3
     )
 
