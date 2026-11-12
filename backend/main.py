@@ -1,48 +1,42 @@
+from typing import List, Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
-from backend.core.ai_engine import generate_answer, ingest_pdf_bytes
+from backend.core.ai_engine import generate_answer, ingest_pdf_bytes, clear_database
 
 app = FastAPI(
     title="UniNotes AI API",
-    description="API profesional para consultar apuntes universitarios usando RAG",
-    version="1.1.0"
+    description="API profesional para consultar apuntes universitarios usando RAG con Memoria y Citas",
+    version="1.2.0"
 )
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
 
 class QuestionRequest(BaseModel):
     question: str
+    history: Optional[List[ChatMessage]] = []
 
 @app.get("/")
 def home():
-    return {"status": "ok", "message": "El servidor de UniNotes AI está listo y dinámico 🚀"}
+    return {"status": "ok", "message": "UniNotes AI v1.2 backend funcionando 🚀"}
 
-# --- NUEVO ENDPOINT DINÁMICO ---
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
-    """
-    Endpoint para subir cualquier archivo PDF. Extrae su texto,
-    lo procesa en fragmentos y lo indexa en la base de datos vectorial.
-    """
-    # Validación de seguridad elemental: solo PDFs
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Formato no permitido. Solo se admiten archivos .pdf")
 
     try:
-        # Leemos los bytes del archivo que el usuario nos envía en streaming
         file_bytes = await file.read()
-
-        # Procesamos el archivo usando la nueva función del motor
         num_chunks = ingest_pdf_bytes(file_bytes, file.filename)
-
         return {
             "status": "success",
             "filename": file.filename,
             "chunks_created": num_chunks,
-            "message": f"¡Éxito! El documento '{file.filename}' ha sido procesado e indexado en ChromaDB en {num_chunks} trozos. 🧠"
+            "message": f"¡Éxito! Documento '{file.filename}' procesado e indexado."
         }
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error crítico al procesar el archivo: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/ask")
 def ask_question(body: QuestionRequest):
@@ -50,10 +44,23 @@ def ask_question(body: QuestionRequest):
         raise HTTPException(status_code=400, detail="La pregunta no puede estar vacía")
 
     try:
-        answer = generate_answer(body.question)
+        # Convertimos el modelo Pydantic a lista de dicts para el engine
+        history_dicts = [msg.model_dump() for msg in body.history] if body.history else []
+        result = generate_answer(body.question, history=history_dicts)
+
         return {
             "question": body.question,
-            "answer": answer
+            "answer": result["answer"],
+            "sources": result["sources"]
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error interno del servidor de IA: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error en el motor de IA: {str(e)}")
+
+@app.delete("/clear")
+def clear_db():
+    """Borra todos los datos vectoriales almacenados."""
+    try:
+        clear_database()
+        return {"status": "success", "message": "Base de datos vectorial limpiada correctamente."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al limpiar la base de datos: {str(e)}")

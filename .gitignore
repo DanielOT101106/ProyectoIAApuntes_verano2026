@@ -1,2 +1,9 @@
-.venv
+.venv/
 .env
+__pycache__/
+*.pyc
+.idea/
+*.iml
+chroma_db/
+vector_db/
+.DS_Store
