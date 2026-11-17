@@ -48,7 +48,7 @@ def ingest_pdf_bytes(file_bytes: bytes, filename: str) -> int:
         metadatas.append({"source": filename, "chunk_index": idx + 1})
         ids.append(f"{filename}_chunk_{idx}")
 
-    collection.add(
+    collection.upsert(
         documents=documents,
         metadatas=metadatas,
         ids=ids
