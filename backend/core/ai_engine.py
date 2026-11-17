@@ -5,6 +5,7 @@ import chromadb
 from openai import OpenAI
 from dotenv import load_dotenv
 from pathlib import Path
+from pdf_processor import chunk_text
 
 load_dotenv()
 CHROMA_PATH = Path(__file__).resolve().parents[2] / "chroma_db"
@@ -36,8 +37,7 @@ def ingest_pdf_bytes(file_bytes: bytes, filename: str) -> int:
     if not full_text.strip():
         raise ValueError("El archivo PDF está vacío o su texto no es legible.")
 
-    chunk_size = 1000
-    chunks = [full_text[i:i+chunk_size] for i in range(0, len(full_text), chunk_size)]
+    chunks = chunk_text(full_text, chunk_size=1000, chunk_overlap=200)
 
     documents = []
     metadatas = []
