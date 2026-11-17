@@ -5,7 +5,7 @@ import chromadb
 from openai import OpenAI
 from dotenv import load_dotenv
 from pathlib import Path
-from pdf_processor import chunk_text
+from backend.core.pdf_processor import chunk_text
 
 load_dotenv()
 CHROMA_PATH = Path(__file__).resolve().parents[2] / "chroma_db"
